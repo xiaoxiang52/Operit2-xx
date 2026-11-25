@@ -212,6 +212,16 @@ jobs:
           command -v pnpm
           test -x "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++"
 
+      # The Xcode script phase swallows the compiler's stderr through execFileSync, so a
+      # failing USearch compile only surfaces as "ELIFECYCLE Command failed". Building it
+      # here keeps em++ output in the job log, and the script is content-addressed, so the
+      # later in-build invocation reuses the produced wasm instead of recompiling.
+      - name: Prebuild USearch WASM
+        run: |
+          echo "EMXX=$EMXX"
+          "$EMXX" --version
+          "$GITHUB_WORKSPACE/.venv/bin/python" plugins/packages/buildin/character_cards/vendor/usearch/build.py
+
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
         run: python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
