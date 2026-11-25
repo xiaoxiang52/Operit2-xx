@@ -69,6 +69,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pub-
 
+      - name: Prepare models.dev catalog
+        run: python3 tools/build_scripts/models_dev_bundle.py
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -86,7 +89,7 @@ jobs:
             apps/cli/target
             hosts/apple/target
             target/operit-build-tools
-          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'apps/cli/Cargo.lock', 'apps/cli/Cargo.toml', 'apps/cli/src/**', 'apps/flutter/native/operit-flutter-bridge/Cargo.lock', 'apps/flutter/native/operit-flutter-bridge/Cargo.toml', 'hosts/apple/Cargo.lock', 'hosts/apple/Cargo.toml', 'hosts/web/Cargo.lock', 'hosts/web/Cargo.toml') }}
+          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'apps/cli/Cargo.lock', 'apps/cli/Cargo.toml', 'apps/cli/src/**/*.rs', 'hosts/apple/Cargo.toml', 'hosts/apple/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-
 
@@ -124,3 +127,5 @@ jobs:
           path: tools/release/dist/operit2-cli-macos-*.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+          
