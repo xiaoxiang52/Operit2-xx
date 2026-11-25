@@ -354,6 +354,83 @@ jobs:
           grep -q "$WASM_CLANG" "$script"
           echo "music_studio WASM toolchain pinned: clang=$WASM_CLANG ld=$WASM_LD"
 
+      # sync_plugin_packages.py regenerates plugins/types/*.d.ts from
+      # core/crates/plugin/sdk/src through the operit-plugin-sdk-codegen crate
+      # (_generate_plugin_sdk_types). The checked-in declarations are a superset of what
+      # that generator currently emits, so the in-build regeneration silently downgrades
+      # the ToolPkg surface and plugins typecheck against an API that no longer has the
+      # methods they call — the observed symptom is
+      #   voice_call/src/main.ts(472,5): error TS2353: 'participants' does not exist
+      #   in type 'MediaStageProps'
+      # Generate once here to record the delta, keep the complete declarations, and stop
+      # the in-build regeneration from clobbering them again.
+      - name: Pin plugin SDK type declarations
+        if: inputs.products != 'cli'
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/plugin-types-committed
+          cp -R plugins/types /tmp/plugin-types-committed
+
+          cargo run --manifest-path core/Cargo.toml -p operit-plugin-sdk-codegen -- \
+            generate "$GITHUB_WORKSPACE/core/crates/plugin/sdk/src" "$GITHUB_WORKSPACE/plugins/types" \
+            > /tmp/codegen.log 2>&1 || echo "::warning::operit-plugin-sdk-codegen failed, see log below"
+          tail -5 /tmp/codegen.log || true
+
+          if git diff --quiet -- plugins/types; then
+            echo "plugin types: generator output already matches the committed declarations"
+          else
+            echo "::warning::generator output diverges from the committed declarations:"
+            git --no-pager diff --stat -- plugins/types || true
+            echo "--- MediaStageProps as generated ---"
+            sed -n '/interface MediaStageProps/,/^}/p' plugins/types/compose-dsl.d.ts | head -16 || true
+          fi
+
+          # Restore the committed superset and keep it: the app must not typecheck plugins
+          # against a reduced SDK surface.
+          rm -rf plugins/types
+          cp -R /tmp/plugin-types-committed plugins/types
+          grep -q 'participants?: MediaStageParticipant\[\]' plugins/types/compose-dsl.d.ts
+
+          # Neutralise the in-build regeneration of the same files.
+          sync_script=plugins/tools/sync_plugin_packages.py
+          test -f "$sync_script"
+          python3 - "$sync_script" <<'PY'
+          import pathlib, sys
+
+          path = pathlib.Path(sys.argv[1])
+          src = path.read_text()
+          marker = "PATTERN-KEEP-COMMITTED-TYPES"
+          old = "_generate_plugin_sdk_types(repo_root, dry_run=bool(args.dry_run))"
+          if marker in src:
+              print(f"{path} already pinned")
+          elif old not in src:
+              print(f"::error::cannot pin {path}: {old!r} not found", file=sys.stderr)
+              sys.exit(1)
+          else:
+              path.write_text(src.replace(old, f"pass  # {marker}: keep plugins/types as committed"))
+              print(f"pinned {path}")
+          PY
+          grep -q 'PATTERN-KEEP-COMMITTED-TYPES' "$sync_script"
+          python3 -c "import ast,pathlib,sys; ast.parse(pathlib.Path('$sync_script').read_text()); print('sync script still parses')"
+
+      # Fail in a minute instead of twenty-five: compile the plugin that broke last run so a
+      # still-wrong SDK surface shows up here, not after a full Xcode build.
+      - name: Preflight plugin typecheck
+        if: inputs.products != 'cli'
+        run: |
+          tsc="$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin/tsc"
+          test -x "$tsc"
+          set +e
+          "$tsc" -p plugins/packages/external/voice_call/tsconfig.json > /tmp/preflight-tsc.log 2>&1
+          status=$?
+          set -e
+          tail -20 /tmp/preflight-tsc.log || true
+          if grep -q 'TS2353.*participants' /tmp/preflight-tsc.log; then
+            echo "::error::voice_call still typechecks against a MediaStageProps without participants"
+            exit 1
+          fi
+          echo "preflight tsc exit=$status (only TS2353/participants is fatal here)"
+
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
         run: python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
