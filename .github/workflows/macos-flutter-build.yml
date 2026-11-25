@@ -161,6 +161,29 @@ jobs:
           # Always activate: a cache hit restores the SDK but not ~/.emscripten.
           ./.ci-tools/emsdk/emsdk activate "$EMSDK_VERSION"
           test -x .ci-tools/emsdk/upstream/emscripten/em++
+          test -x .ci-tools/emsdk/upstream/bin/clang
+
+          # music_studio's build-wasm.mjs shells out to a bare `clang --target=wasm32` plus
+          # `wasm-ld`, and the Xcode 16.4 toolchain has no WebAssembly backend
+          # ("unable to create target ... triple wasm32"). Route exactly those calls to the
+          # emsdk toolchain; every other clang invocation keeps resolving to Apple's.
+          shim="$GITHUB_WORKSPACE/.ci-tools/wasm-shim"
+          mkdir -p "$shim"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in' \
+            '    --target=wasm32*) exec "${WASM_CLANG:?WASM_CLANG is not set}" "$@";;' \
+            '  esac' \
+            'done' \
+            'exec /usr/bin/clang "$@"' \
+            > "$shim/clang"
+          chmod +x "$shim/clang"
+          cp "$shim/clang" "$shim/clang++"
+          ln -sfn "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/wasm-ld" "$shim/wasm-ld"
+          echo "WASM_CLANG=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/clang" >> "$GITHUB_ENV"
+          echo "$shim" >> "$GITHUB_PATH"
+
           echo "EMSDK=$GITHUB_WORKSPACE/.ci-tools/emsdk" >> "$GITHUB_ENV"
           echo "EMXX=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++" >> "$GITHUB_ENV"
           echo "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
