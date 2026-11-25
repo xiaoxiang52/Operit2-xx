@@ -85,6 +85,17 @@ jobs:
             apps/flutter/app/package-lock.json
             package-lock.json
 
+      # Plugin ToolPkg scripts shell out to a bare `pnpm` (e.g. change_review:
+      # "pack:toolpkg": "pnpm run check && node scripts/build.mjs"), while
+      # sync_plugin_packages.py invokes it as `corepack pnpm`. Without the shim,
+      # the nested call dies with `sh: pnpm: command not found`. Only shim pnpm so
+      # the npm steps above keep using the real npm.
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable pnpm
+          command -v pnpm
+          pnpm --version
+
       - name: Install repository TypeScript
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.ci-tools/typescript"
@@ -174,6 +185,7 @@ jobs:
           command -v fvm
           command -v node
           command -v npm
+          command -v pnpm
 
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
