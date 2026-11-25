@@ -169,24 +169,50 @@ jobs:
           # emsdk toolchain; every other clang invocation keeps resolving to Apple's.
           shim="$GITHUB_WORKSPACE/.ci-tools/wasm-shim"
           mkdir -p "$shim"
-          printf '%s\n' \
-            '#!/bin/sh' \
-            'for arg in "$@"; do' \
-            '  case "$arg" in' \
-            '    --target=wasm32*) exec "${WASM_CLANG:?WASM_CLANG is not set}" "$@";;' \
-            '  esac' \
-            'done' \
-            'exec /usr/bin/clang "$@"' \
-            > "$shim/clang"
+          cat > "$shim/clang" <<'SHIM'
+          #!/bin/sh
+          self="$(basename "$0")"
+          case "$self" in
+            clang++) wasm_cc="${WASM_CLANGXX:?WASM_CLANGXX is not set}" ;;
+            *)       wasm_cc="${WASM_CLANG:?WASM_CLANG is not set}" ;;
+          esac
+          for arg in "$@"; do
+            case "$arg" in
+              --target=wasm32*) exec "$wasm_cc" "$@" ;;
+            esac
+          done
+          exec "/usr/bin/$self" "$@"
+          SHIM
           chmod +x "$shim/clang"
-          cp "$shim/clang" "$shim/clang++"
-          ln -sfn "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/wasm-ld" "$shim/wasm-ld"
-          echo "WASM_CLANG=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/clang" >> "$GITHUB_ENV"
-          echo "$shim" >> "$GITHUB_PATH"
+          ln -sfn clang "$shim/clang++"
+
+          # emsdk ships its LLVM under upstream/bin. Fall back rather than fail on a layout
+          # difference, and drop a clear error when neither source has the linker.
+          wasm_clangxx="$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/clang++"
+          [ -x "$wasm_clangxx" ] || wasm_clangxx="$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/clang"
+          if [ -x "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/wasm-ld" ]; then
+            wasm_ld="$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/wasm-ld"
+          elif command -v wasm-ld >/dev/null 2>&1; then
+            wasm_ld="$(command -v wasm-ld)"
+          else
+            echo "::error::emsdk provides no wasm-ld; cannot link the music_studio DSP"
+            exit 1
+          fi
+          ln -sfn "$wasm_ld" "$shim/wasm-ld"
+          {
+            echo "WASM_CLANG=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/bin/clang"
+            echo "WASM_CLANGXX=$wasm_clangxx"
+            echo "WASM_LD=$wasm_ld"
+          } >> "$GITHUB_ENV"
 
           echo "EMSDK=$GITHUB_WORKSPACE/.ci-tools/emsdk" >> "$GITHUB_ENV"
           echo "EMXX=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++" >> "$GITHUB_ENV"
           echo "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+
+          # $GITHUB_PATH only appends, so /usr/bin/clang keeps winning over the shim and the
+          # bare `clang --target=wasm32` call would still hit Apple's toolchain. Prepending
+          # through $GITHUB_ENV is the only way to get the shim resolved first.
+          echo "PATH=$shim:$PATH" >> "$GITHUB_ENV"
 
       - name: Prepare models.dev catalog
         run: python3 tools/build_scripts/models_dev_bundle.py
@@ -237,6 +263,24 @@ jobs:
           command -v npm
           command -v pnpm
           test -x "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++"
+
+          # The shim must shadow Apple's clang, otherwise music_studio's bare
+          # `clang --target=wasm32` dies 15+ minutes into the build.
+          resolved_clang="$(command -v clang)"
+          echo "clang -> $resolved_clang"
+          echo "wasm-ld -> $(command -v wasm-ld || echo missing)"
+          if [ "$resolved_clang" != "$GITHUB_WORKSPACE/.ci-tools/wasm-shim/clang" ]; then
+            echo "::error::clang resolves to $resolved_clang instead of the wasm32 shim"
+            exit 1
+          fi
+
+          # Exercise both shim branches: wasm32 goes to emsdk, native falls back to Apple.
+          printf 'int shim_probe(int x){return x + 1;}\n' > /tmp/shim-probe.c
+          clang -O0 -c /tmp/shim-probe.c -o /tmp/shim-probe-native.o
+          clang --target=wasm32 -O3 -nostdlib -fno-builtin -c /tmp/shim-probe.c -o /tmp/shim-probe.o
+          wasm-ld --no-entry --export=shim_probe /tmp/shim-probe.o -o /tmp/shim-probe.wasm
+          test -s /tmp/shim-probe.wasm
+          echo "wasm32 shim ok: $(wc -c < /tmp/shim-probe.wasm) bytes"
 
       # The Xcode script phase swallows the compiler's stderr through execFileSync, so a
       # failing USearch compile only surfaces as "ELIFECYCLE Command failed". Building it
