@@ -57,7 +57,7 @@ jobs:
       RUST_TOOLCHAIN_VERSION: 1.95.0
       FVM_VERSION: 4.3.0
       TYPESCRIPT_VERSION: 5.9.3
-      EMSDK_VERSION: latest
+      EMSDK_VERSION: 3.1.50
 
     defaults:
       run:
@@ -143,6 +143,9 @@ jobs:
       # Emscripten. It resolves EMXX first, then `em++` on PATH, then the managed
       # .ci-tools/emsdk/upstream/emscripten/em++.py. Nothing else in the desktop build
       # bootstraps it, so it is installed here and exported through EMXX.
+      # Version is pinned: `latest` is Emscripten 7.x, whose libc++ dropped `std::is_pod`
+      # and hides `std::uncaught_exceptions` under -fignore-exceptions, which breaks the
+      # pinned USearch revision. 3.1.50 still ships both.
       - name: Cache Emscripten SDK
         uses: actions/cache@v4
         with:
