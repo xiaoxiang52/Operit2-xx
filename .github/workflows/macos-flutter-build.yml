@@ -51,7 +51,11 @@ on:
 jobs:
   build-macos:
     runs-on: macos-15
-    timeout-minutes: 90
+    # A cold macOS release build (Rust bridge for two archs, ~100 Flutter plugins,
+    # Xcode 16 explicit-module precompilation) exceeds the default 90 minutes: the
+    # unsandbox step alone reached 65 minutes before being cancelled at the old limit.
+    # Caches only persist on success, so a cancelled run guarantees another cold start.
+    timeout-minutes: 240
     env:
       RUSTFLAGS: -Awarnings
       RUST_TOOLCHAIN_VERSION: 1.95.0
