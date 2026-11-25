@@ -12,12 +12,40 @@ on:
           - "app"
           - "cli"
           - "all"
+      build_type:
+        description: "macOS app distribution type (unsandbox = 不进沙箱)"
+        required: false
+        default: "unsandbox"
+        type: choice
+        options:
+          - "unsandbox"
+          - "sandbox"
+          - "both"
+      package:
+        description: "macOS app package format"
+        required: false
+        default: "dmg"
+        type: choice
+        options:
+          - "dmg"
+          - "zip"
+          - "both"
   workflow_call:
     inputs:
       products:
         description: "Release products to build"
         required: false
         default: "app"
+        type: string
+      build_type:
+        description: "macOS app distribution type"
+        required: false
+        default: "both"
+        type: string
+      package:
+        description: "macOS app package format"
+        required: false
+        default: "both"
         type: string
 
 jobs:
@@ -130,28 +158,125 @@ jobs:
           test -f apps/flutter/app/lib/core/proxy/generated/CoreProxyClients.g.dart
           test -f apps/flutter/app/lib/core/proxy/generated/CoreProxyModels.g.dart
 
+      # .venv/bin/python is created lazily by build_scripts/common.py:prepare_python_command().
+      # Mirror that link here so this check exercises the same interpreter the build will use.
       - name: Verify build dependencies
         run: |
           test -x "$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin/tsc"
+
+          mkdir -p "$GITHUB_WORKSPACE/.venv/bin"
+          ln -sfn "$(command -v python3)" "$GITHUB_WORKSPACE/.venv/bin/python"
           test -x "$GITHUB_WORKSPACE/.venv/bin/python"
+          "$GITHUB_WORKSPACE/.venv/bin/python" --version
+
           command -v cargo
           command -v rustup
           command -v fvm
           command -v node
           command -v npm
 
-      - name: Build and package macOS app
-        if: inputs.products != 'cli'
-        run: |
-          python3 tools/build_scripts/build_flutter_macos.py --type sandbox
-          python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
+      - name: Build and package macOS app (unsandbox)
+        if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
+        run: python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
+
+      - name: Build and package macOS app (sandbox)
+        if: inputs.products != 'cli' && (inputs.build_type == 'sandbox' || inputs.build_type == 'both')
+        run: python3 tools/build_scripts/build_flutter_macos.py --type sandbox
 
       - name: Build and package macOS CLI
         if: inputs.products != 'app'
         run: python3 tools/build_scripts/build_cli_macos.py --arches all
 
+      # Builds a drag-to-install DMG (app bundle + /Applications symlink) and refuses to
+      # publish it unless the signed entitlements match the requested distribution type.
+      - name: Package drag-install DMG
+        if: inputs.products != 'cli' && inputs.package != 'zip'
+        run: |
+          set -euo pipefail
+
+          version="$(python3 -c "import tomllib;print(tomllib.load(open('core/crates/runtime/application/Cargo.toml','rb'))['package']['version'])")"
+          dist="tools/release/dist"
+          types=""
+          case "${{ inputs.build_type }}" in
+            both) types="unsandbox sandbox" ;;
+            *)    types="${{ inputs.build_type }}" ;;
+          esac
+          if [ -z "$types" ]; then
+            types="unsandbox"
+          fi
+          mkdir -p "$dist"
+
+          for build_type in $types; do
+            app="tools/release/work/macos/$build_type/Operit2.app"
+            if [ ! -d "$app" ]; then
+              echo "::error::missing app bundle: $app"
+              exit 1
+            fi
+
+            codesign --verify --deep --strict "$app"
+
+            if [ "$build_type" = "sandbox" ]; then want=true; else want=false; fi
+            ent_file="$(mktemp)"
+            codesign -d --entitlements :- "$app" > "$ent_file" 2>/dev/null || true
+            got="$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" "$ent_file" 2>/dev/null || echo missing)"
+            rm -f "$ent_file"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$app has app-sandbox=$got but build_type=$build_type requires $want"
+              exit 1
+            fi
+            echo "$app: app-sandbox=$got (verified)"
+
+            stage="$(mktemp -d)"
+            ditto "$app" "$stage/Operit2.app"
+            ln -sfn /Applications "$stage/Applications"
+
+            printf '%s\n' \
+              'Operit2 macOS 安装说明' \
+              '' \
+              '1. 把左侧的 Operit2.app 拖到右侧的 Applications 文件夹。' \
+              '2. 首次启动若提示"无法验证开发者"，打开 系统设置 → 隐私与安全性 → 仍要打开。' \
+              '3. 或在终端执行：xattr -dr com.apple.quarantine /Applications/Operit2.app' \
+              '' \
+              '本包为非沙箱版本（app-sandbox = false），可自由读写本地文件。' \
+              '未使用 Apple Developer ID 签名，因此未经过公证。' \
+              > "$stage/INSTALL.txt"
+
+            dmg="$dist/operit2-app-macos-universal-${build_type}-${version}.dmg"
+            rm -f "$dmg"
+            hdiutil create -volname "Operit2" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"
+            codesign --force --sign - "$dmg"
+            hdiutil verify "$dmg"
+
+            mount_point="$(mktemp -d)"
+            hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point" > /dev/null
+            test -d "$mount_point/Operit2.app"
+            test -L "$mount_point/Applications"
+            codesign --verify --deep --strict "$mount_point/Operit2.app"
+            hdiutil detach "$mount_point" > /dev/null 2>&1 || hdiutil detach "$mount_point" -force > /dev/null
+
+            rm -rf "$stage" "$mount_point"
+
+            shasum -a 256 "$dmg" | tee "$dmg.sha256"
+            {
+              echo "### macOS installer"
+              echo ""
+              echo "| file | size |"
+              echo "| --- | --- |"
+              echo "| $(basename "$dmg") | $(du -h "$dmg" | cut -f1) |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload macOS DMG installer
+        if: inputs.products != 'cli' && inputs.package != 'zip'
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit2-macos-dmg-${{ github.sha }}
+          path: tools/release/dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload macOS app artifact
-        if: inputs.products != 'cli'
+        if: inputs.products != 'cli' && inputs.package != 'dmg'
         uses: actions/upload-artifact@v4
         with:
           name: operit2-macos-${{ github.sha }}
