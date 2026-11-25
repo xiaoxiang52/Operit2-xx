@@ -19,6 +19,7 @@ on:
         required: false
         default: "app"
         type: string
+
 jobs:
   build-macos:
     runs-on: macos-15
@@ -27,6 +28,7 @@ jobs:
       RUSTFLAGS: -Awarnings
       RUST_TOOLCHAIN_VERSION: 1.95.0
       FVM_VERSION: 4.3.0
+      TYPESCRIPT_VERSION: 5.9.3
 
     defaults:
       run:
@@ -50,6 +52,26 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/flutter/app/package-lock.json
+            package-lock.json
+
+      - name: Install repository TypeScript
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.ci-tools/typescript"
+
+          npm install \
+            --prefix "$GITHUB_WORKSPACE/.ci-tools/typescript" \
+            --no-audit \
+            --no-fund \
+            "typescript@$TYPESCRIPT_VERSION"
+
+          test -x "$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin/tsc"
+
+          "$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin/tsc" --version
+
+          echo "$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Cache project Flutter SDK
         uses: actions/cache@v4
@@ -68,6 +90,14 @@ jobs:
           key: ${{ runner.os }}-pub-${{ hashFiles('apps/flutter/app/pubspec.lock') }}
           restore-keys: |
             ${{ runner.os }}-pub-
+
+      - name: Cache repository TypeScript
+        uses: actions/cache@v4
+        with:
+          path: .ci-tools/typescript/node_modules
+          key: ${{ runner.os }}-typescript-${{ env.TYPESCRIPT_VERSION }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-typescript-${{ env.TYPESCRIPT_VERSION }}-
 
       - name: Prepare models.dev catalog
         run: python3 tools/build_scripts/models_dev_bundle.py
@@ -89,7 +119,7 @@ jobs:
             apps/cli/target
             hosts/apple/target
             target/operit-build-tools
-          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'apps/cli/Cargo.lock', 'apps/cli/Cargo.toml', 'apps/cli/src/**/*.rs', 'hosts/apple/Cargo.toml', 'hosts/apple/**/*.rs') }}
+          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'apps/cli/Cargo.lock', 'apps/cli/Cargo.toml', 'apps/cli/src/**', 'hosts/apple/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-
 
@@ -99,6 +129,16 @@ jobs:
           cargo check --manifest-path core/crates/proxy/local/Cargo.toml --quiet
           test -f apps/flutter/app/lib/core/proxy/generated/CoreProxyClients.g.dart
           test -f apps/flutter/app/lib/core/proxy/generated/CoreProxyModels.g.dart
+
+      - name: Verify build dependencies
+        run: |
+          test -x "$GITHUB_WORKSPACE/.ci-tools/typescript/node_modules/.bin/tsc"
+          test -x "$GITHUB_WORKSPACE/.venv/bin/python"
+          command -v cargo
+          command -v rustup
+          command -v fvm
+          command -v node
+          command -v npm
 
       - name: Build and package macOS app
         if: inputs.products != 'cli'
@@ -127,5 +167,3 @@ jobs:
           path: tools/release/dist/operit2-cli-macos-*.tar.gz
           if-no-files-found: error
           retention-days: 14
-
-          
