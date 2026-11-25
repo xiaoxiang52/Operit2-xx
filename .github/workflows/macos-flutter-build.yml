@@ -309,6 +309,51 @@ jobs:
           echo "::error::pub get failed after 4 attempts"
           exit 1
 
+      # The plugin sync (`corepack pnpm run pack:toolpkg`) runs *inside* the Xcode
+      # "Build Rust Bridge" script phase, and Xcode replaces PATH wholesale in that phase
+      # (`export PATH=/Applications/Xcode_*.app/.../SWBUniversalPlatformPlugin...`), so the
+      # wasm-shim above is invisible there and music_studio's bare `clang --target=wasm32`
+      # still resolves to Apple clang, which has no WebAssembly backend. Environment
+      # variables other than PATH do survive, so pin the two spawn targets explicitly.
+      # Idempotent + asserted: an upstream rewrite that renames the calls must fail loudly
+      # rather than silently fall back to Apple clang.
+      - name: Patch music_studio WASM toolchain
+        if: inputs.products != 'cli'
+        run: |
+          set -euo pipefail
+          script="plugins/packages/external/music_studio/scripts/build-wasm.mjs"
+          test -f "$script"
+          test -x "$WASM_CLANG"
+          test -x "$WASM_LD"
+          python3 - "$script" "$WASM_CLANG" "$WASM_LD" <<'PY'
+          import pathlib, sys
+
+          path = pathlib.Path(sys.argv[1])
+          clang, wasm_ld = sys.argv[2], sys.argv[3]
+          src = path.read_text()
+          pairs = [
+              ("execFileSync('clang'", "process.env.WASM_CLANG", clang),
+              ("execFileSync('wasm-ld'", "process.env.WASM_LD", wasm_ld),
+          ]
+          out = src
+          for old, env, fallback in pairs:
+              if env in out:
+                  continue
+              if old not in out:
+                  print(f"::error::cannot patch {path}: {old!r} not found", file=sys.stderr)
+                  sys.exit(1)
+              out = out.replace(old, f"execFileSync({env} || '{fallback}'")
+          if out != src:
+              path.write_text(out)
+              print(f"patched {path}")
+          else:
+              print(f"{path} already patched")
+          PY
+          grep -q 'process\.env\.WASM_CLANG' "$script"
+          grep -q 'process\.env\.WASM_LD' "$script"
+          grep -q "$WASM_CLANG" "$script"
+          echo "music_studio WASM toolchain pinned: clang=$WASM_CLANG ld=$WASM_LD"
+
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
         run: python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
