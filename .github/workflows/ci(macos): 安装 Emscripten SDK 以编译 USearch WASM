@@ -57,6 +57,7 @@ jobs:
       RUST_TOOLCHAIN_VERSION: 1.95.0
       FVM_VERSION: 4.3.0
       TYPESCRIPT_VERSION: 5.9.3
+      EMSDK_VERSION: latest
 
     defaults:
       run:
@@ -138,6 +139,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-typescript-${{ env.TYPESCRIPT_VERSION }}-
 
+      # character_cards/vendor/usearch/build.py compiles USearch to WebAssembly and requires
+      # Emscripten. It resolves EMXX first, then `em++` on PATH, then the managed
+      # .ci-tools/emsdk/upstream/emscripten/em++.py. Nothing else in the desktop build
+      # bootstraps it, so it is installed here and exported through EMXX.
+      - name: Cache Emscripten SDK
+        uses: actions/cache@v4
+        with:
+          path: .ci-tools/emsdk
+          key: ${{ runner.os }}-emsdk-${{ env.EMSDK_VERSION }}-v1
+
+      - name: Install Emscripten SDK
+        run: |
+          if [ ! -x .ci-tools/emsdk/upstream/emscripten/em++ ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git .ci-tools/emsdk
+            ./.ci-tools/emsdk/emsdk install "$EMSDK_VERSION"
+          fi
+          # Always activate: a cache hit restores the SDK but not ~/.emscripten.
+          ./.ci-tools/emsdk/emsdk activate "$EMSDK_VERSION"
+          test -x .ci-tools/emsdk/upstream/emscripten/em++
+          echo "EMSDK=$GITHUB_WORKSPACE/.ci-tools/emsdk" >> "$GITHUB_ENV"
+          echo "EMXX=$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+
       - name: Prepare models.dev catalog
         run: python3 tools/build_scripts/models_dev_bundle.py
 
@@ -186,6 +210,7 @@ jobs:
           command -v node
           command -v npm
           command -v pnpm
+          test -x "$GITHUB_WORKSPACE/.ci-tools/emsdk/upstream/emscripten/em++"
 
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
