@@ -225,6 +225,23 @@ jobs:
           "$EMXX" --version
           "$GITHUB_WORKSPACE/.venv/bin/python" plugins/packages/buildin/character_cards/vendor/usearch/build.py
 
+      # git-based pub dependencies occasionally die mid-fetch on the runner
+      # ("fatal: early EOF / fetch-pack: invalid index-pack output"). Warming the cache
+      # with retries here keeps the build's own pub get from hitting the network again.
+      - name: Warm pub dependencies
+        if: inputs.products != 'cli'
+        run: |
+          for attempt in 1 2 3 4; do
+            if (cd apps/flutter/app && fvm flutter pub get); then
+              echo "pub get ok on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::pub get attempt $attempt failed, retrying"
+            sleep 15
+          done
+          echo "::error::pub get failed after 4 attempts"
+          exit 1
+
       - name: Build and package macOS app (unsandbox)
         if: inputs.products != 'cli' && (inputs.build_type == 'unsandbox' || inputs.build_type == 'both')
         run: python3 tools/build_scripts/build_flutter_macos.py --type unsandbox
