@@ -192,6 +192,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-
 
+      # fk: 补上 Xcode / CocoaPods 中间产物缓存。
+      # 上游只缓存了 Flutter SDK、pub-cache 和 Cargo target，没有缓存编译中间产物，
+      # 导致每次 flutter build macos 都是零基础全量编译（实测该步 67 分钟，占整轮 82%）。
+      # 用 restore-keys 而非精确 key，避免 lock 文件一改就整块 miss。
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/flutter/app/macos/Pods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('apps/flutter/app/macos/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Cache Flutter and Xcode build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/flutter/app/build
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-fbuild-${{ hashFiles('apps/flutter/app/pubspec.lock', 'apps/flutter/app/macos/Podfile.lock', 'core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-fbuild-
+
       - name: Generate Dart proxy artifacts
         run: |
           cargo clean --manifest-path core/crates/proxy/local/Cargo.toml -p operit-proxy-local
