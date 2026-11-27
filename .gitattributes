@@ -7,3 +7,9 @@ plugins/types-v1/LICENSE -text
 
 hosts/android/src/terminal_chroot.sh text eol=lf
 hosts/android/src/system_shell_init.sh text eol=lf
+
+# === fk-managed: fork 二开冲突防护 ===
+# 我方钉死的文件：合并时永远保留当前分支（dev）的版本，上游的改动不会覆盖。
+# 需要哪个文件受保护，照下面格式加一行；加完把它从上游改动里排除掉即可。
+# custom/**  merge=ours
+# *.local.*  merge=ours
